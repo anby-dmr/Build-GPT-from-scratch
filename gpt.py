@@ -57,13 +57,15 @@ class Head(nn.Module):
         self.value = nn.Linear(embed_size, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
         
+        self.head_size = head_size
+
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B, T, C = x.shape
         q = self.query(x)
         k = self.key(x)
-        wei = q @ k.transpose(-1, -2) * C**(-0.5) # Careful! Use C**(-0.5) instead of head_size**(-0.5)
+        wei = q @ k.transpose(-1, -2) * self.head_size**(-0.5) # Guess this should be head_size instead of C according to the paper.
         wei = wei.masked_fill(self.tril[:T, :T] == 0, value=-float('inf')) # Careful! Slice the tril.
         wei = F.softmax(wei, dim=-1) # (B, T, T)
         wei = self.dropout(wei)
@@ -111,8 +113,8 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(embed_size)
     
     def forward(self, x):
-        x = x + self.ln1(self.att(x))
-        x = x + self.ln2(self.fc(x))
+        x = x + self.att(self.ln1(x))
+        x = x + self.fc(self.ln2(x))
         return x
 
 # Attention! BigramModel.
@@ -191,4 +193,4 @@ for it in range(max_iters):
     optimizer.step()
 
     if it % 1000 == 0 or it == max_iters - 1:
-        torch.save(model.state_dict(), 'GPT' + str(it) + '.pth')
+        torch.save(model.state_dict(), 'GPT_dk_headSize' + str(it) + '.pth')
