@@ -117,13 +117,78 @@ class Block(nn.Module):
         x = x + self.fc(self.ln2(x))
         return x
 
+class MultiHeadAttention_Fast(nn.Module):
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.d_model = num_heads * head_size
+        self.num_heads = num_heads
+        self.head_size = head_size
+
+        self.Q = nn.Linear(self.d_model, self.d_model)
+        self.K = nn.Linear(self.d_model, self.d_model)
+        self.V = nn.Linear(self.d_model, self.d_model)
+
+        self.proj = nn.Linear(self.d_model, self.d_model)
+        self.dropout = nn.Dropout(dropout)
+
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        # (B, T, C)
+        B, T, C = x.shape
+        # compute all heads at one time
+        q = self.Q(x)
+        k = self.K(x)
+        v = self.V(x)
+
+        # split into different heads
+        # (B, T, #heads, head_size)
+        q = q.view(B, T, self.num_heads, self.head_size) 
+        k = k.view(B, T, self.num_heads, self.head_size)
+        v = v.view(B, T, self.num_heads, self.head_size)
+
+        # transpose for further computation
+        # (B, #heads, T, head_size)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        # masked scaled dot attention
+        wei = q @ k.transpose(-1, -2) * self.head_size ** (-0.5) # (B, #heads, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, value=-float('inf'))
+        wei = F.softmax(wei, dim=-1)
+
+        # compute the combined value b, transpose back
+        b = wei @ v # (B, #heads, T, head_size)
+        b = b.transpose(1, 2) # (B, T, #heads, head_size)
+        b = b.reshape(B, T, -1) # (B, T, d_model)
+
+        # proj and dropout
+        b = self.proj(b)
+        b = self.dropout(b)
+        return b
+
+class Block_Fast(nn.Module):
+    def __init__(self, embed_size, num_heads):
+        super().__init__()
+        head_size = embed_size // num_heads       
+        self.att = MultiHeadAttention_Fast(num_heads, head_size)
+        self.fc = FeedForward(embed_size)
+        self.ln1 = nn.LayerNorm(embed_size)
+        self.ln2 = nn.LayerNorm(embed_size)
+    
+    def forward(self, x):
+        x = x + self.att(self.ln1(x))
+        x = x + self.fc(self.ln2(x))
+        return x
+
 # Attention! BigramModel.
 class BigramModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_embed = nn.Embedding(vocab_size, embed_size)
         self.pos_embed = nn.Embedding(block_size, embed_size)
-        self.blocks = nn.Sequential(*[Block(embed_size, num_heads) for _ in range(num_layers)])
+        self.blocks = nn.Sequential(*[Block_Fast(embed_size, num_heads) for _ in range(num_layers)])
         self.ln_f = nn.LayerNorm(embed_size)
         self.lm_head = nn.Linear(embed_size, vocab_size)
 
@@ -193,4 +258,4 @@ for it in range(max_iters):
     optimizer.step()
 
     if it % 1000 == 0 or it == max_iters - 1:
-        torch.save(model.state_dict(), 'GPT_dk_headSize' + str(it) + '.pth')
+        torch.save(model.state_dict(), 'GPT_faster_attention' + str(it) + '.pth')
